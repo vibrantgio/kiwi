@@ -1,3 +1,3 @@
-module github.com/reactivego/kiwi
+module github.com/vibrantgio/kiwi
 
 go 1.16

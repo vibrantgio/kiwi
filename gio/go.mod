@@ -1,10 +1,10 @@
-module github.com/reactivego/kiwi/gio
+module github.com/vibrantgio/kiwi/gio
 
 go 1.24.0
 
 require (
 	gioui.org v0.10.1
-	github.com/reactivego/kiwi v0.0.4
+	github.com/vibrantgio/kiwi v0.0.5
 )
 
 require (

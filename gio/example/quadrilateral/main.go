@@ -15,7 +15,7 @@ import (
 	"gioui.org/op/clip"
 	"gioui.org/op/paint"
 
-	"github.com/reactivego/kiwi"
+	"github.com/vibrantgio/kiwi"
 )
 
 var (
