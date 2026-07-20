@@ -9,15 +9,21 @@ import (
 
 	"gioui.org/app"
 	"gioui.org/f32"
+	"gioui.org/io/event"
 	"gioui.org/io/pointer"
-	"gioui.org/io/system"
 	"gioui.org/op"
 	"gioui.org/op/clip"
 	"gioui.org/op/paint"
 
-	"golang.org/x/exp/shiny/materialdesign/colornames"
-
 	"github.com/reactivego/kiwi"
+)
+
+var (
+	grey900   = color.NRGBA{R: 0x21, G: 0x21, B: 0x21, A: 0xFF}
+	grey600   = color.NRGBA{R: 0x75, G: 0x75, B: 0x75, A: 0xFF}
+	orange50  = color.NRGBA{R: 0xFF, G: 0xF3, B: 0xE0, A: 0xFF}
+	orange200 = color.NRGBA{R: 0xFF, G: 0xCC, B: 0x80, A: 0xFF}
+	orange700 = color.NRGBA{R: 0xF5, G: 0x7C, B: 0x00, A: 0xFF}
 )
 
 func main() {
@@ -26,7 +32,8 @@ func main() {
 }
 
 func Quadrilateral() {
-	window := app.NewWindow(
+	window := new(app.Window)
+	window.Option(
 		app.Title("Kiwi - Quadrilateral"),
 		app.Size(500, 500))
 
@@ -119,10 +126,11 @@ func Quadrilateral() {
 
 	ops := new(op.Ops)
 	backdrop := new(int)
-	for event := range window.Events() {
-		if frame, ok := event.(system.FrameEvent); ok {
-			ops.Reset()
-
+	for {
+		switch frame := window.Event().(type) {
+		case app.DestroyEvent:
+			os.Exit(0)
+		case app.FrameEvent:
 			scale := frame.Metric.PxPerDp
 
 			frameSize := f32.Pt(float32(frame.Size.X), float32(frame.Size.Y))
@@ -130,41 +138,18 @@ func Quadrilateral() {
 				size.Suggest(solver, frameSize, scale)
 			}
 
-			// backdrop
-			stack := clip.Rect(image.Rectangle{Max: frame.Size}).Push(ops)
-			pointer.InputOp{Tag: backdrop, Types: pointer.Move | pointer.Press | pointer.Drag | pointer.Release}.Add(ops)
-			paint.Fill(ops, nrgba(colornames.Grey900))
-			stack.Pop()
-
-			// edges
-			canvas := clip.Path{}
-			canvas.Begin(ops)
-			canvas.MoveTo(corners[0].Pt(scale))
-			for i := range corners {
-				canvas.LineTo(corners[(i+1)%4].Pt(scale))
-			}
-			canvas.MoveTo(midpoints[0].Pt(scale))
-			for i := range midpoints {
-				canvas.LineTo(midpoints[(i+1)%4].Pt(scale))
-			}
-			path := clip.Stroke{Width: 2 * scale, Path: canvas.End()}.Op()
-			paint.FillShape(ops, nrgba(colornames.Grey600), path)
-
-			// points
-			for i := range points {
-				switch i {
-				case selected:
-					points[i].Fill(ops, scale, colornames.Orange50)
-				case hovered:
-					points[i].Fill(ops, scale, colornames.Orange200)
-				default:
-					points[i].Fill(ops, scale, colornames.Orange700)
+			// Handle the pointer events of the previous frame before
+			// drawing, so the frame reflects the latest positions.
+			for {
+				ev, ok := frame.Source.Event(pointer.Filter{
+					Target: backdrop,
+					Kinds:  pointer.Move | pointer.Press | pointer.Drag | pointer.Release,
+				})
+				if !ok {
+					break
 				}
-			}
-
-			for _, ev := range frame.Queue.Events(backdrop) {
 				if p, ok := ev.(pointer.Event); ok {
-					switch p.Type {
+					switch p.Kind {
 					case pointer.Press:
 						previous := selected
 						selected = -1
@@ -198,16 +183,49 @@ func Quadrilateral() {
 								hovered = i
 							}
 						}
-
 					}
 				}
 			}
 
 			solver.UpdateVariables()
+
+			ops.Reset()
+
+			// backdrop
+			stack := clip.Rect(image.Rectangle{Max: frame.Size}).Push(ops)
+			event.Op(ops, backdrop)
+			paint.Fill(ops, grey900)
+			stack.Pop()
+
+			// edges
+			canvas := clip.Path{}
+			canvas.Begin(ops)
+			canvas.MoveTo(corners[0].Pt(scale))
+			for i := range corners {
+				canvas.LineTo(corners[(i+1)%4].Pt(scale))
+			}
+			canvas.MoveTo(midpoints[0].Pt(scale))
+			for i := range midpoints {
+				canvas.LineTo(midpoints[(i+1)%4].Pt(scale))
+			}
+			path := clip.Stroke{Width: 2 * scale, Path: canvas.End()}.Op()
+			paint.FillShape(ops, grey600, path)
+
+			// points
+			for i := range points {
+				switch i {
+				case selected:
+					points[i].Fill(ops, scale, orange50)
+				case hovered:
+					points[i].Fill(ops, scale, orange200)
+				default:
+					points[i].Fill(ops, scale, orange700)
+				}
+			}
+
 			frame.Frame(ops)
 		}
 	}
-	os.Exit(0)
 }
 
 const PointSize = 5
@@ -228,9 +246,9 @@ func (p Point) Hit(hit f32.Point, scale float32) bool {
 	return math.Sqrt(dx*dx+dy*dy) <= PointSize
 }
 
-func (p Point) Fill(ops *op.Ops, scale float32, fill color.Color) {
+func (p Point) Fill(ops *op.Ops, scale float32, fill color.NRGBA) {
 	x, y, d := int(p.X.Value*float64(scale)), int(p.Y.Value*float64(scale)), int(PointSize*scale)
-	paint.FillShape(ops, nrgba(fill), clip.Rect(image.Rect(x-d, y-d, x+d, y+d)).Op())
+	paint.FillShape(ops, fill, clip.Rect(image.Rect(x-d, y-d, x+d, y+d)).Op())
 }
 
 func (p Point) Edit(solver *kiwi.Solver, options ...kiwi.ConstraintOption) {
@@ -255,8 +273,4 @@ func (p Point) Suggest(solver *kiwi.Solver, pt f32.Point, scale float32) {
 func (p Point) Unedit(solver *kiwi.Solver) {
 	solver.RemoveEditVariable(p.X)
 	solver.RemoveEditVariable(p.Y)
-}
-
-func nrgba(c color.Color) color.NRGBA {
-	return color.NRGBAModel.Convert(c).(color.NRGBA)
 }
