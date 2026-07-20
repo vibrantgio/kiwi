@@ -8,9 +8,30 @@ import (
 	"strings"
 )
 
+// cell is one symbol:coefficient pair of a row. The symbol's sort key
+// (kind in the top bits, id below) is stored inline so that searches
+// and merges never have to dereference the symbol.
+type cell struct {
+	key   uint64
+	coeff float64
+	sym   *symbol
+}
+
+/*
+row represents a linear expression: constant + sum of coeff * symbol.
+
+The cells are held in a flat slice sorted ascending by symbol key (the
+same design as the sorted vector map used by the C++ kiwi
+implementation). Compared to a hash map this keeps scans and merges on
+contiguous memory, avoids per-operation hashing, and makes every
+"first symbol such that ..." selection deterministic. Because the key
+orders by kind first (EXTERNAL < SLACK < ERROR < DUMMY), external
+symbols always form a prefix of the cells and dummies a suffix.
+*/
 type row struct {
 	constant float64
-	cells    map[*symbol]float64
+	cells    []cell
+	scratch  []cell // reusable merge buffer, see insertRowWithCoefficient
 }
 
 type rowOption func(*row)
@@ -22,7 +43,7 @@ func withConstant(constant float64) rowOption {
 }
 
 func newRow(options ...rowOption) *row {
-	r := &row{cells: map[*symbol]float64{}}
+	r := &row{}
 	for _, option := range options {
 		option(r)
 	}
@@ -30,11 +51,7 @@ func newRow(options ...rowOption) *row {
 }
 
 func (r *row) copy() *row {
-	cells := make(map[*symbol]float64)
-	for s, c := range r.cells {
-		cells[s] = c
-	}
-	return &row{r.constant, cells}
+	return &row{constant: r.constant, cells: append([]cell(nil), r.cells...)}
 }
 
 /*
@@ -50,6 +67,31 @@ func (r *row) add(value float64) float64 {
 }
 
 /*
+search returns the position of the cell with the given key, or the
+position where such a cell would be inserted when it is not present.
+*/
+func (r *row) search(key uint64) int {
+	lo, hi := 0, len(r.cells)
+	for lo < hi {
+		mid := int(uint(lo+hi) >> 1)
+		if r.cells[mid].key < key {
+			lo = mid + 1
+		} else {
+			hi = mid
+		}
+	}
+	return lo
+}
+
+/*
+has reports whether the given symbol is present in the row.
+*/
+func (r *row) has(sym *symbol) bool {
+	i := r.search(sym.key)
+	return i < len(r.cells) && r.cells[i].key == sym.key
+}
+
+/*
 insertSymbolWithCoefficient inserts a symbol into the row with a given coefficient.
 
 If the symbol already exists in the row, the coefficient will be
@@ -57,11 +99,18 @@ added to the existing coefficient. If the resulting coefficient
 is zero, the symbol will be removed from the row
 */
 func (r *row) insertSymbolWithCoefficient(sym *symbol, coeff float64) {
-	coeff += r.cells[sym]
-	if NearZero(coeff) {
-		delete(r.cells, sym)
-	} else {
-		r.cells[sym] = coeff
+	i := r.search(sym.key)
+	if i < len(r.cells) && r.cells[i].key == sym.key {
+		coeff += r.cells[i].coeff
+		if NearZero(coeff) {
+			r.cells = append(r.cells[:i], r.cells[i+1:]...)
+		} else {
+			r.cells[i].coeff = coeff
+		}
+	} else if !NearZero(coeff) {
+		r.cells = append(r.cells, cell{})
+		copy(r.cells[i+1:], r.cells[i:])
+		r.cells[i] = cell{sym.key, coeff, sym}
 	}
 }
 
@@ -82,24 +131,54 @@ insertRowWithCoefficient inserts a row into this row with a given coefficient.
 The constant and the cells of the other row will be multiplied by
 the coefficient and added to this row. Any cell with a resulting
 coefficient of zero will be removed from the row.
+
+Both cell slices are sorted, so this is a single two pointer merge
+into the row's scratch buffer, which is then swapped with the cells.
+The other row must not be the row itself.
 */
 func (r *row) insertRowWithCoefficient(other *row, coefficient float64) {
 	r.constant += other.constant * coefficient
-	for otherSym, otherCoeff := range other.cells {
-		coeff := r.cells[otherSym] + otherCoeff*coefficient
-		if NearZero(coeff) {
-			delete(r.cells, otherSym)
-		} else {
-			r.cells[otherSym] = coeff
+	if len(other.cells) == 0 {
+		return
+	}
+	a, b := r.cells, other.cells
+	dst := r.scratch[:0]
+	i, j := 0, 0
+	for i < len(a) && j < len(b) {
+		switch {
+		case a[i].key < b[j].key:
+			dst = append(dst, a[i])
+			i++
+		case a[i].key > b[j].key:
+			if coeff := b[j].coeff * coefficient; !NearZero(coeff) {
+				dst = append(dst, cell{b[j].key, coeff, b[j].sym})
+			}
+			j++
+		default:
+			if coeff := a[i].coeff + b[j].coeff*coefficient; !NearZero(coeff) {
+				dst = append(dst, cell{a[i].key, coeff, a[i].sym})
+			}
+			i++
+			j++
 		}
 	}
+	dst = append(dst, a[i:]...)
+	for ; j < len(b); j++ {
+		if coeff := b[j].coeff * coefficient; !NearZero(coeff) {
+			dst = append(dst, cell{b[j].key, coeff, b[j].sym})
+		}
+	}
+	r.cells, r.scratch = dst, r.cells
 }
 
 /*
 removeSymbol removes the given symbol from the row.
 */
 func (r *row) removeSymbol(sym *symbol) {
-	delete(r.cells, sym)
+	i := r.search(sym.key)
+	if i < len(r.cells) && r.cells[i].key == sym.key {
+		r.cells = append(r.cells[:i], r.cells[i+1:]...)
+	}
 }
 
 /*
@@ -107,11 +186,10 @@ reverseSign reverse the sign of the constant and all cells in the row.
 */
 func (r *row) reverseSign() {
 	r.constant = -r.constant
-	cells := make(map[*symbol]float64)
-	for s, c := range r.cells {
-		cells[s] = -c
+	cells := r.cells
+	for i := range cells {
+		cells[i].coeff = -cells[i].coeff
 	}
-	r.cells = cells
 }
 
 /*
@@ -126,10 +204,9 @@ The symbols are chosen according to the following precedence:
 If a subject cannot be found, an invalid symbol will be returned.
 */
 func (r *row) chooseSubject(tag tag) *symbol {
-	for sym := range r.cells {
-		if sym.is(EXTERNAL) {
-			return sym
-		}
+	// External symbols sort first, so any external is at cell 0.
+	if len(r.cells) > 0 && r.cells[0].sym.is(EXTERNAL) {
+		return r.cells[0].sym
 	}
 
 	if tag.marker.is(SLACK) || tag.marker.is(ERROR) {
@@ -144,19 +221,16 @@ func (r *row) chooseSubject(tag tag) *symbol {
 		}
 	}
 
-	return newSymbol(INVALID)
+	return invalidSymbol
 }
 
 /*
 allDummies tests whether a row is composed of all dummy variables.
 */
 func (r *row) allDummies() bool {
-	for sym := range r.cells {
-		if !sym.is(DUMMY) {
-			return false
-		}
-	}
-	return true
+	// Dummy symbols sort last, so all cells are dummies exactly when
+	// the first one is.
+	return len(r.cells) == 0 || r.cells[0].sym.is(DUMMY)
 }
 
 /*
@@ -170,14 +244,14 @@ be multiplied by the negative inverse of the target coefficient.
 The given symbol *must* exist in the row.
 */
 func (r *row) solveFor(sym *symbol) {
-	coeff := -1.0 / r.cells[sym]
-	delete(r.cells, sym)
+	i := r.search(sym.key)
+	coeff := -1.0 / r.cells[i].coeff
+	r.cells = append(r.cells[:i], r.cells[i+1:]...)
 	r.constant *= coeff
-	cells := make(map[*symbol]float64)
-	for s, c := range r.cells {
-		cells[s] = c * coeff
+	cells := r.cells
+	for k := range cells {
+		cells[k].coeff *= coeff
 	}
-	r.cells = cells
 }
 
 /*
@@ -200,12 +274,11 @@ coefficientFor gets the coefficient for the given symbol.
 
 If the symbol does not exist in the row, zero will be returned.
 */
-func (r row) coefficientFor(sym *symbol) float64 {
-	if coeff, present := r.cells[sym]; present {
-		return coeff
-	} else {
-		return 0.0
+func (r *row) coefficientFor(sym *symbol) float64 {
+	if i := r.search(sym.key); i < len(r.cells) && r.cells[i].key == sym.key {
+		return r.cells[i].coeff
 	}
+	return 0.0
 }
 
 /*
@@ -218,8 +291,10 @@ expression 3 * a * y + a * c + b.
 If the symbol does not exist in the row, this is a no-op.
 */
 func (r *row) substitute(sym *symbol, other *row) {
-	if coeff, present := r.cells[sym]; present {
-		delete(r.cells, sym)
+	i := r.search(sym.key)
+	if i < len(r.cells) && r.cells[i].key == sym.key {
+		coeff := r.cells[i].coeff
+		r.cells = append(r.cells[:i], r.cells[i+1:]...)
 		r.insertRowWithCoefficient(other, coeff)
 	}
 }
@@ -230,13 +305,17 @@ anyPivotableSymbol gets the first Slack or Error symbol in the row.
 If no such symbol is present, and Invalid symbol will be returned.
 */
 func (r *row) anyPivotableSymbol() *symbol {
-	for sym := range r.cells {
-		if sym.is(SLACK) || sym.is(ERROR) {
+	for i := range r.cells {
+		if sym := r.cells[i].sym; sym.is(SLACK) || sym.is(ERROR) {
 			return sym
 		}
 	}
-	return newSymbol(INVALID)
+	return invalidSymbol
 }
+
+// dummyKeys is the lower bound of the keys of all DUMMY symbols; cells
+// with a key at or above it are dummies (they sort last in a row).
+const dummyKeys = uint64(DUMMY) << 60
 
 /*
 getEnteringSymbol computes the entering variable for a pivot operation.
@@ -247,13 +326,16 @@ the criteria, it means the objective function is at a minimum, and an
 invalid symbol is returned.
 */
 func (r *row) getEnteringSymbol() *symbol {
-	objective := r
-	for sym, coeff := range objective.cells {
-		if !sym.is(DUMMY) && coeff < 0.0 {
-			return sym
+	for i := range r.cells {
+		c := &r.cells[i]
+		if c.key >= dummyKeys {
+			break
+		}
+		if c.coeff < 0.0 {
+			return c.sym
 		}
 	}
-	return newSymbol(INVALID)
+	return invalidSymbol
 }
 
 /*
@@ -268,23 +350,26 @@ is returned.
 func (r *row) getDualEnteringSymbol(other *row) *symbol {
 	objective := r
 	ratio := math.MaxFloat64
-	entering := newSymbol(INVALID)
-	for sym, coeff := range other.cells {
-		if !sym.is(DUMMY) && coeff > 0.0 {
-			r := objective.coefficientFor(sym) / coeff
-			if r < ratio {
-				ratio = r
-				entering = sym
+	entering := invalidSymbol
+	for i := range other.cells {
+		c := &other.cells[i]
+		if c.key >= dummyKeys {
+			break
+		}
+		if c.coeff > 0.0 {
+			if ra := objective.coefficientFor(c.sym) / c.coeff; ra < ratio {
+				ratio = ra
+				entering = c.sym
 			}
 		}
 	}
 	return entering
 }
 
-func (r row) String() string {
-	var c []string
-	for s, v := range r.cells {
-		c = append(c, fmt.Sprint(v, " * ", s))
+func (r *row) String() string {
+	c := []string{fmt.Sprint(r.constant)}
+	for _, e := range r.cells {
+		c = append(c, fmt.Sprint(e.coeff, " * ", e.sym))
 	}
 	return strings.Join(c, " + ")
 }

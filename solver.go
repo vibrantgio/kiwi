@@ -10,7 +10,7 @@ import (
 
 type Solver struct {
 	cns                 map[*Constraint]tag
-	rows                map[*symbol]*row
+	rows                []basicRow
 	vars                map[*Variable]*symbol
 	edits               map[*Variable]*edit
 	stays               map[*Variable]*Constraint
@@ -19,15 +19,74 @@ type Solver struct {
 	artificialObjective *row
 }
 
+// basicRow associates a basic symbol with the row that defines it. The
+// solver keeps the tableau sorted by symbol key (stored inline so
+// searching does not dereference symbols), which makes pivot selection
+// deterministic and lets scans skip the external prefix wholesale.
+type basicRow struct {
+	key uint64
+	sym *symbol
+	row *row
+}
+
+// slackKeys is the lower bound of the keys of all non-external
+// symbols: rows with a key at or above it are SLACK, ERROR or DUMMY.
+const slackKeys = uint64(SLACK) << 60
+
 func NewSolver() *Solver {
 	return &Solver{
 		cns:       map[*Constraint]tag{},
-		rows:      map[*symbol]*row{},
 		vars:      map[*Variable]*symbol{},
 		edits:     map[*Variable]*edit{},
 		stays:     map[*Variable]*Constraint{},
 		objective: newRow(),
 	}
+}
+
+// searchRows returns the position of the tableau row with the given
+// key, or the position where it would be inserted if not present.
+func (s *Solver) searchRows(key uint64) int {
+	lo, hi := 0, len(s.rows)
+	for lo < hi {
+		mid := int(uint(lo+hi) >> 1)
+		if s.rows[mid].key < key {
+			lo = mid + 1
+		} else {
+			hi = mid
+		}
+	}
+	return lo
+}
+
+// findRow returns the row in which the given symbol is basic.
+func (s *Solver) findRow(sym *symbol) (*row, bool) {
+	if i := s.searchRows(sym.key); i < len(s.rows) && s.rows[i].key == sym.key {
+		return s.rows[i].row, true
+	}
+	return nil, false
+}
+
+// putRow makes the given symbol basic in the given row.
+func (s *Solver) putRow(sym *symbol, row *row) {
+	i := s.searchRows(sym.key)
+	if i < len(s.rows) && s.rows[i].key == sym.key {
+		s.rows[i].row = row
+		return
+	}
+	s.rows = append(s.rows, basicRow{})
+	copy(s.rows[i+1:], s.rows[i:])
+	s.rows[i] = basicRow{sym.key, sym, row}
+}
+
+// dropRow removes the row in which the given symbol is basic from the
+// tableau and returns it.
+func (s *Solver) dropRow(sym *symbol) (*row, bool) {
+	if i := s.searchRows(sym.key); i < len(s.rows) && s.rows[i].key == sym.key {
+		row := s.rows[i].row
+		s.rows = append(s.rows[:i], s.rows[i+1:]...)
+		return row, true
+	}
+	return nil, false
 }
 
 /*
@@ -79,12 +138,17 @@ func (s *Solver) AddConstraint(constraint *Constraint, options ...ConstraintOpti
 	// the row represents an unsatisfiable constraint.
 	if subject.is(INVALID) {
 		if !s.addWithArtificialVariable(row) {
+			// The tableau was rotated while trying to satisfy the
+			// constraint; restore the optimal feasible state before
+			// reporting the constraint as unsatisfiable.
+			s.optimize(s.objective)
+			s.dualOptimize()
 			return UnsatisfiableConstraint{constraint}
 		}
 	} else {
 		row.solveFor(subject)
 		s.substitute(subject, row)
-		s.rows[subject] = row
+		s.putRow(subject, row)
 	}
 
 	s.cns[constraint] = tag
@@ -92,7 +156,14 @@ func (s *Solver) AddConstraint(constraint *Constraint, options ...ConstraintOpti
 	// Optimizing after each constraint is added performs less
 	// aggregate work due to a smaller average system size. It
 	// also ensures the solver remains in a consistent state.
-	return s.optimize(s.objective)
+	if err := s.optimize(s.objective); err != nil {
+		return err
+	}
+	// Substitutions performed while adding the constraint can drive
+	// the constant of a row negative. Restore feasibility with the
+	// dual simplex so the tableau is optimal AND feasible before
+	// variable values are read.
+	return s.dualOptimize()
 }
 
 /*
@@ -118,32 +189,39 @@ func (s *Solver) RemoveConstraint(constraint *Constraint) error {
 
 	// If the marker is basic, simply drop the row. Otherwise,
 	// pivot the marker into the basis and then drop the row.
-	if _, present := s.rows[tag.marker]; present {
-		delete(s.rows, tag.marker)
-	} else {
+	if _, present := s.dropRow(tag.marker); !present {
 		leaving, present := s.getMarkerLeavingRow(tag.marker)
 		if !present {
 			return FailedToFindLeavingRow
 		}
-		row := s.rows[leaving]
-		delete(s.rows, leaving)
+		row, _ := s.dropRow(leaving)
 		row.solveForPair(leaving, tag.marker)
 		s.substitute(tag.marker, row)
 	}
 
-	return s.optimize(s.objective)
+	if err := s.optimize(s.objective); err != nil {
+		return err
+	}
+	// See AddConstraint: restore feasibility of rows whose constant
+	// went negative during the removal.
+	return s.dualOptimize()
 }
 
 func (s *Solver) removeConstraintEffects(constraint *Constraint, tag tag) {
+	// A soft equality contributes TWO error symbols to the objective
+	// (errplus and errminus), so both must be removed, not one or the
+	// other. Removing only the marker leaves a dead strength*errminus
+	// term in the objective which corrupts later optimizations.
 	if tag.marker.is(ERROR) {
 		s.removeMarkerEffects(tag.marker, constraint.Strength)
-	} else if tag.other.is(ERROR) {
+	}
+	if tag.other.is(ERROR) {
 		s.removeMarkerEffects(tag.other, constraint.Strength)
 	}
 }
 
 func (s *Solver) removeMarkerEffects(marker *symbol, strength Strength) {
-	if row, present := s.rows[marker]; present {
+	if row, present := s.findRow(marker); present {
 		s.objective.insertRowWithCoefficient(row, float64(-strength))
 	} else {
 		s.objective.insertSymbolWithCoefficient(marker, float64(-strength))
@@ -157,7 +235,8 @@ func (s *Solver) getMarkerLeavingRow(marker *symbol) (*symbol, bool) {
 
 	var first, second, third *symbol
 
-	for sym, candidateRow := range s.rows {
+	for i := range s.rows {
+		sym, candidateRow := s.rows[i].sym, s.rows[i].row
 		c := candidateRow.coefficientFor(marker)
 		if c == 0.0 {
 			continue
@@ -242,7 +321,7 @@ func (s *Solver) HasStay(variable *Variable) bool {
 }
 
 /*
-uUdateStays updates all stay constraints to match the value their
+UpdateStays updates all stay constraints to match the value their
 associated variable currently holds.
 
 This is automatically called by RemoveEditVariable to commit the
@@ -286,7 +365,9 @@ func (s *Solver) AddEditVariable(variable *Variable, options ...ConstraintOption
 	if constraint.Strength == REQUIRED {
 		return BadRequiredStrength
 	}
-	s.AddConstraint(constraint)
+	if err := s.AddConstraint(constraint); err != nil {
+		return err
+	}
 	s.edits[variable] = &edit{
 		tag:        s.cns[constraint],
 		constraint: constraint,
@@ -342,19 +423,20 @@ func (s *Solver) SuggestValue(variable *Variable, value float64) error {
 	delta := value - info.constant
 	info.constant = value
 
-	if row, present := s.rows[info.tag.marker]; present {
+	if row, present := s.findRow(info.tag.marker); present {
 		// Check first if the positive error variable is basic.
 		if row.add(-delta) < 0.0 {
 			s.infeasibleRows = append(s.infeasibleRows, info.tag.marker)
 		}
-	} else if row, present = s.rows[info.tag.other]; present {
+	} else if row, present = s.findRow(info.tag.other); present {
 		// Check next if the negative error variable is basic.
 		if row.add(delta) < 0.0 {
 			s.infeasibleRows = append(s.infeasibleRows, info.tag.other)
 		}
 	} else {
 		// Otherwise update each row where the error variables exist.
-		for sym, row := range s.rows {
+		for i := range s.rows {
+			sym, row := s.rows[i].sym, s.rows[i].row
 			coeff := row.coefficientFor(info.tag.marker)
 			if coeff != 0.0 && row.add(delta*coeff) < 0.0 && !sym.is(EXTERNAL) {
 				s.infeasibleRows = append(s.infeasibleRows, sym)
@@ -370,7 +452,7 @@ UpdateVariables updates the values of the external solver variables.
 */
 func (s *Solver) UpdateVariables() {
 	for variable, symbol := range s.vars {
-		if row, present := s.rows[symbol]; present {
+		if row, present := s.findRow(symbol); present {
 			variable.Value = row.constant
 		} else {
 			variable.Value = 0.0
@@ -391,9 +473,7 @@ func (s *Solver) Reset() {
 	for k := range s.cns {
 		delete(s.cns, k)
 	}
-	for k := range s.rows {
-		delete(s.rows, k)
-	}
+	s.rows = s.rows[:0]
 	for k := range s.vars {
 		delete(s.vars, k)
 	}
@@ -439,7 +519,7 @@ func (s *Solver) createRow(constraint *Constraint) (row *row, tag tag) {
 			s.vars[term.Variable] = sym
 		}
 
-		if otherRow, present := s.rows[sym]; present {
+		if otherRow, present := s.findRow(sym); present {
 			row.insertRowWithCoefficient(otherRow, term.Coefficient)
 		} else {
 			row.insertSymbolWithCoefficient(sym, term.Coefficient)
@@ -480,7 +560,7 @@ func (s *Solver) createRow(constraint *Constraint) (row *row, tag tag) {
 
 	// Ensure the tag.other symbol is not nil
 	if tag.other == nil {
-		tag.other = newSymbol(INVALID)
+		tag.other = invalidSymbol
 	}
 
 	return row, tag
@@ -494,7 +574,7 @@ This will return false if the constraint cannot be satisfied.
 func (s *Solver) addWithArtificialVariable(row *row) bool {
 	// Create and add the artificial variable to the tableau
 	art := newSymbol(SLACK)
-	s.rows[art] = row.copy()
+	s.putRow(art, row.copy())
 
 	// Optimize the artificial objective. This is successful only
 	// if the artificial objective could be optimized to zero.
@@ -505,10 +585,16 @@ func (s *Solver) addWithArtificialVariable(row *row) bool {
 
 	// If the artificial variable is basic, pivot the row so that
 	// it becomes basic. If the row is constant, exit early.
-	if rowptr, present := s.rows[art]; present {
-		delete(s.rows, art)
+	if rowptr, present := s.dropRow(art); present {
 		if len(rowptr.cells) == 0 {
 			return success
+		}
+		if !success {
+			// The constraint is unsatisfiable. Dropping the artificial
+			// row drops the offending equation from the tableau again;
+			// pivoting it onto a real symbol (as the success path does)
+			// would permanently embed the rejected constraint.
+			return false
 		}
 		entering := rowptr.anyPivotableSymbol()
 		if entering.is(INVALID) {
@@ -516,12 +602,18 @@ func (s *Solver) addWithArtificialVariable(row *row) bool {
 		}
 		rowptr.solveForPair(art, entering)
 		s.substitute(entering, rowptr)
-		s.rows[entering] = rowptr
+		s.putRow(entering, rowptr)
+		// The pivoted row does not pass through substitute, so a
+		// negative constant must be flagged here or it escapes the
+		// dual optimization.
+		if rowptr.constant < 0.0 && !entering.is(EXTERNAL) {
+			s.infeasibleRows = append(s.infeasibleRows, entering)
+		}
 	}
 
 	// Remove the artificial variable from the tableau.
-	for _, row := range s.rows {
-		row.removeSymbol(art)
+	for i := range s.rows {
+		s.rows[i].row.removeSymbol(art)
 	}
 	s.objective.removeSymbol(art)
 	return success
@@ -546,33 +638,53 @@ func (s *Solver) optimize(objective *row) error {
 		}
 
 		// Compute the row which holds the exit symbol for a pivot.
+		// The tableau is sorted by symbol key, so the external rows
+		// (never exit candidates) form a prefix skipped wholesale.
 		ratio := math.MaxFloat64
 		var exitSym *symbol
 		var exitRow *row
-		for sym, row := range s.rows {
-			if !sym.is(EXTERNAL) {
-				temp := row.coefficientFor(enterSym)
-				if temp < 0.0 {
-					tempRatio := -row.constant / temp
-					if tempRatio < ratio {
-						ratio = tempRatio
-						exitSym = sym
-						exitRow = row
-					}
+		for i := s.searchRows(slackKeys); i < len(s.rows); i++ {
+			row := s.rows[i].row
+			temp := row.coefficientFor(enterSym)
+			if temp < 0.0 {
+				tempRatio := -row.constant / temp
+				if tempRatio < ratio {
+					ratio = tempRatio
+					exitSym = s.rows[i].sym
+					exitRow = row
 				}
 			}
 		}
 
 		// If no appropriate exit symbol was found, this indicates that
 		// the objective function is unbounded.
+		//
+		// The solver objective is a nonnegative weighted sum of
+		// nonnegative error variables, so it is bounded below and a
+		// genuinely unbounded pivot direction cannot exist. Reaching
+		// this point therefore means the entering coefficient is
+		// accumulated rounding noise (its exact value is zero): drop
+		// the cell and continue. The artificial objective optimized
+		// during phase 1 of a constraint addition has no such bound,
+		// so for it this remains an error.
 		if exitSym == nil || exitRow == nil {
+			if objective == s.objective {
+				objective.removeSymbol(enterSym)
+				continue
+			}
 			return UnboundedObjective
 		}
 		// pivot the entering symbol into the basis
-		delete(s.rows, exitSym)
+		s.dropRow(exitSym)
 		exitRow.solveForPair(exitSym, enterSym)
 		s.substitute(enterSym, exitRow)
-		s.rows[enterSym] = exitRow
+		s.putRow(enterSym, exitRow)
+		// The pivoted row does not pass through substitute, so a
+		// negative constant (possible when optimizing an infeasible
+		// tableau) must be flagged here for the dual optimization.
+		if exitRow.constant < 0.0 && !enterSym.is(EXTERNAL) {
+			s.infeasibleRows = append(s.infeasibleRows, enterSym)
+		}
 	}
 }
 
@@ -596,18 +708,21 @@ func (s *Solver) dualOptimize() error {
 		leaving := s.infeasibleRows[last]
 		s.infeasibleRows[last] = nil
 		s.infeasibleRows = s.infeasibleRows[:last]
-		r := s.rows[leaving]
+		r, present := s.findRow(leaving)
 
-		if r != nil && r.constant < 0.0 {
+		// Constants within EPS of zero are considered zero (the row is
+		// feasible); repairing them can fail with InternalSolverError
+		// on rows that only carry rounding noise.
+		if present && r.constant < 0.0 && !NearZero(r.constant) {
 			entering := s.objective.getDualEnteringSymbol(r)
 			if entering.is(INVALID) {
 				return InternalSolverError
 			}
-			delete(s.rows, leaving)
+			s.dropRow(leaving)
 
 			r.solveForPair(leaving, entering)
 			s.substitute(entering, r)
-			s.rows[entering] = r
+			s.putRow(entering, r)
 		}
 
 	}
@@ -621,7 +736,8 @@ This method will substitute all instances of the parametric symbol
 in the tableau and the objective function with the given row.
 */
 func (s *Solver) substitute(sym *symbol, other *row) {
-	for isym, irow := range s.rows {
+	for i := range s.rows {
+		isym, irow := s.rows[i].sym, s.rows[i].row
 		irow.substitute(sym, other)
 		if !isym.is(EXTERNAL) && irow.constant < 0.0 {
 			s.infeasibleRows = append(s.infeasibleRows, isym)
@@ -641,8 +757,8 @@ func (s Solver) String() string {
 	fmt.Fprintln(&sb)
 	fmt.Fprintln(&sb, "Tableau")
 	fmt.Fprintln(&sb, "-------")
-	for s, r := range s.rows {
-		fmt.Fprintln(&sb, s, "|", r)
+	for _, br := range s.rows {
+		fmt.Fprintln(&sb, br.sym, "|", br.row)
 	}
 	fmt.Fprintln(&sb)
 	fmt.Fprintln(&sb, "Infeasible")

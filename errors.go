@@ -68,5 +68,5 @@ func (e DuplicateStayVariable) Error() string {
 type UnknownVariableName struct{ Name string }
 
 func (e UnknownVariableName) Error() string {
-	return fmt.Sprintf("Unkown Variable Name: %q", e.Name)
+	return fmt.Sprintf("Unknown Variable Name: %q", e.Name)
 }

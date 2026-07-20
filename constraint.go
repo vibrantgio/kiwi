@@ -24,6 +24,9 @@ func WithStrength(strength Strength) ConstraintOption {
 }
 
 func NewConstraint(expr Expression, op Operator, options ...ConstraintOption) *Constraint {
+	// Reduce on a copy of the terms; reducing in place would corrupt
+	// the expression still held by the caller.
+	expr.Terms = append([]Term(nil), expr.Terms...)
 	// reduce: c + pv + qv + rw -> c + (p+q)v + rw
 	vars := make(map[*Variable]int)
 	collapsed := 0

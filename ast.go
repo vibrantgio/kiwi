@@ -157,8 +157,30 @@ func (a AST) NewConstraint(vars []*Variable, options ...ConstraintOption) (*Cons
 				return nil, err
 			}
 			return ex, nil
+		case *ast.UnaryExpr:
+			x, err := evaluate(e.X)
+			if err != nil {
+				return nil, err
+			}
+			switch e.Op {
+			case token.ADD:
+				return x, nil
+			case token.SUB:
+				switch v := x.(type) {
+				case liteval:
+					return liteval{-v.Value}, nil
+				case vareval:
+					return termeval{v.Variable.Negate()}, nil
+				case termeval:
+					return termeval{v.Term.Negate()}, nil
+				case expreval:
+					return expreval{v.Expression.Negate()}, nil
+				}
+				return nil, EvaluationError("cannot negate operand")
+			}
+			return nil, EvaluationError("unary operator ", e.Op, " not supported")
 		}
-		return nil, nil
+		return nil, EvaluationError("unsupported expression")
 	}
 	evl, err := evaluate(a.Expr)
 	if err != nil {
@@ -656,7 +678,7 @@ func (constreval) div(evaluation) (evaluation, error) {
 }
 
 func (constreval) eql(evaluation) (evaluation, error) {
-	return nil, EvaluationError("cannot create a linear equation form a constraint")
+	return nil, EvaluationError("cannot create a linear equation from a constraint")
 }
 
 func (constreval) leq(evaluation) (evaluation, error) {
