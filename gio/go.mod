@@ -16,6 +16,3 @@ require (
 	golang.org/x/sys v0.39.0 // indirect
 	golang.org/x/text v0.32.0 // indirect
 )
-
-// The example always builds against the kiwi checked out next to it.
-replace github.com/reactivego/kiwi => ../
