@@ -4,7 +4,7 @@ go 1.25.1
 
 require (
 	gioui.org v0.10.1
-	github.com/vibrantgio/kiwi v0.0.5
+	github.com/vibrantgio/kiwi v0.0.6
 )
 
 require (
