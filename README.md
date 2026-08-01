@@ -1,7 +1,7 @@
 # kiwi
 
 The Cassowary incremental constraint solver in Go, for
-[VibrantGio](https://github.com/vibrantgio), a design system for native desktop
+[Vibrant Gio](https://github.com/vibrantgio), a design system for native desktop
 applications on macOS, Windows and Linux, written in pure Go on
 [Gio](https://gioui.org). One package, no dependencies outside the standard
 library.
