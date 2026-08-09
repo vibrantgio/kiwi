@@ -9,11 +9,15 @@ and `Expression` arithmetic, the
 over as a string. The `gio` module holds a single example: a quadrilateral
 whose corners you drag, laid out by the solver.
 
-**Layer.** Outside ADR-001's tier table: a support library — and, with csg,
-one of the two nothing in the organization consumes. Its only caller
-anywhere here is the single example in its own `gio` module, and it depends
-on nothing but the standard library, so a change to it can break nothing
-but itself.
+**Layer.** Outside ADR-001's tier table: a support library, which the rule
+binds in one direction only — every tier may import it, and it may import
+nothing in the table itself. It depends on nothing but the standard
+library, so a change to it can break nothing but itself. Its root module
+imports nothing else in the organization. Nothing in the organization
+imports it. Both directions are measured rather than typed —
+`scripts/check-layers.sh --edges` reports the graph and
+`scripts/sync-agents.sh` renders these sentences from it — so correcting
+them here changes nothing.
 
 **Read the canonical guide before you write code against this module.** It is
 the organization's one agent guide — the module inventory with current tags,
