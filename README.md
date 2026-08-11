@@ -140,7 +140,7 @@ Honest about what does not work yet. Every count below is measured.
 
 - **Nothing in the organization uses it.** Searching all twenty-one repositories
   for `vibrantgio/kiwi` returns exactly one hit, and it is kiwi's own example.
-  There is no constraint-based layout in prism, cadence or anywhere else — the
+  There is no constraint-based layout in components, cadence or anywhere else — the
   design system lays out with Gio's flex and stack. So this module is
   well-tested against its own tests and entirely unexercised by a real
   application, and no phase of the current plan changes that.
