@@ -13,9 +13,8 @@ whose corners you drag, laid out by the solver.
 binds in one direction only — every tier may import it, and it may import
 nothing in the table itself. It depends on nothing but the standard
 library, so a change to it can break nothing but itself. Its root module
-imports nothing else in the organization. Nothing in the organization
-imports it. Both directions are measured rather than typed —
-`scripts/check-layers.sh --edges` reports the graph and
+imports nothing else in the organization. Both directions are measured
+rather than typed — `scripts/check-layers.sh --edges` reports the graph and
 `scripts/sync-agents.sh` renders these sentences from it — so correcting
 them here changes nothing.
 
