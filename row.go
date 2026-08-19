@@ -57,7 +57,7 @@ func (r *row) copy() *row {
 /*
 add adds a constant value to the row constant.
 
-Returns
+# Returns
 
 The new value of the constant
 */
@@ -199,8 +199,9 @@ This method will choose the best subject for using as the solve
 target for the row. An invalid symbol will be returned if there
 is no valid target.
 The symbols are chosen according to the following precedence:
-	1) The first symbol representing an external variable.
-	2) A negative slack or error tag variable.
+ 1. The first symbol representing an external variable.
+ 2. A negative slack or error tag variable.
+
 If a subject cannot be found, an invalid symbol will be returned.
 */
 func (r *row) chooseSubject(tag tag) *symbol {

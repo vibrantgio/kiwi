@@ -95,8 +95,11 @@ AddConstraint adds a constraint to the solver.
 Returns
 
 	DuplicateConstraint
+
 The given constraint has already been added to the solver.
+
 	UnsatisfiableConstraint
+
 The given constraint is required and cannot be satisfied.
 */
 func (s *Solver) AddConstraint(constraint *Constraint, options ...ConstraintOption) error {
@@ -172,6 +175,7 @@ RemoveConstraint removes a constraint from the solver.
 Returns
 
 	UnknownConstraint
+
 The given constraint has not been added to the solver.
 */
 func (s *Solver) RemoveConstraint(constraint *Constraint) error {
@@ -349,8 +353,11 @@ created with STRONG strength.
 Returns
 
 	DuplicateEditVariable
+
 The given edit variable has already been added to the solver.
+
 	BadRequiredStrength
+
 The given strength is >= required.
 */
 func (s *Solver) AddEditVariable(variable *Variable, options ...ConstraintOption) error {
@@ -382,6 +389,7 @@ RemoveEditVariable removes an edit variable from the solver.
 Returns
 
 	UnknownEditVariable
+
 The given edit variable has not been added to the solver.
 */
 func (s *Solver) RemoveEditVariable(variable *Variable) error {
@@ -413,6 +421,7 @@ update the values of all variables.
 Returns
 
 	UnknownEditVariable
+
 The given edit variable has not been added to the solver.
 */
 func (s *Solver) SuggestValue(variable *Variable, value float64) error {
@@ -628,6 +637,7 @@ until the objective function reaches a minimum.
 Returns
 
 	InternalSolverError
+
 The value of the objective function is unbounded.
 */
 func (s *Solver) optimize(objective *row) error {
@@ -699,6 +709,7 @@ optimal and feasible.
 Returns
 
 	InternalSolverError
+
 The system cannot be dual optimized.
 */
 func (s *Solver) dualOptimize() error {
