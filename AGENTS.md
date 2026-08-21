@@ -24,10 +24,11 @@ needs and never who needs it.
 **Read the canonical guide before you write code against this module.** It is
 the organization's one agent guide — the module inventory with current tags,
 the application skeleton, the MVU loop and rx semantics, typography, and the
-pitfalls that are not guessable. It lives exactly once, in `vibrantgio/.github`,
+pitfalls that are not guessable. It lives exactly once, in `vibrantgio/workbench` —
+the repository that showcases building applications with Vibrant Gio —
 and this file links it rather than copying it:
 
-    https://raw.githubusercontent.com/vibrantgio/.github/master/llms.txt
+    https://raw.githubusercontent.com/vibrantgio/workbench/master/llms.txt
 
 **Modules.** `github.com/vibrantgio/kiwi` at the repository root, and one
 nested module: `gio/` (`github.com/vibrantgio/kiwi/gio`). Nested-module
