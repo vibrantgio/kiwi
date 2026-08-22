@@ -42,7 +42,7 @@ Two modules. The root module, `github.com/vibrantgio/kiwi`, is Go 1.25.1 with an
 empty `go.sum` and no `require` block at all — the solver imports nothing but
 `fmt`, `math`, `strings`, `strconv`, `sync/atomic`, `runtime` and `go/{ast,parser,token}`.
 The nested `gio/` module (`github.com/vibrantgio/kiwi/gio`) holds one example
-program and is on gioui.org v0.10.1 like the rest of the organization.
+program and is on gioui.org v0.10.2 like the rest of the organization.
 Nested-module tags carry the directory as a prefix: `gio/v0.0.6`, not `v0.0.6`.
 
 ## Packages
