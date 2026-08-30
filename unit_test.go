@@ -481,8 +481,6 @@ func TestDumpingSolver(t *testing.T) {
 	err := s.AddConstraint(v2.GreaterThanOrEqualsConstant(1)) // (v2 >= 1)
 	assert.NotEqual(t, nil, err, "err")
 
-	// Print the solver state
-	// fmt.Fprintln(os.Stderr, s)
 	state := s.String()
 	headers := []string{"Objective", "Tableau", "Infeasible", "Variables", "Edit Variables", "Constraints"}
 	for _, h := range headers {

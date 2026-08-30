@@ -607,7 +607,7 @@ func (s *Solver) addWithArtificialVariable(row *row) bool {
 		}
 		entering := rowptr.anyPivotableSymbol()
 		if entering.is(INVALID) {
-			return false // unsatisfiable (will this ever happen?)
+			return false // unsatisfiable
 		}
 		rowptr.solveForPair(art, entering)
 		s.substitute(entering, rowptr)
