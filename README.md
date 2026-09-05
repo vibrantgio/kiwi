@@ -59,7 +59,7 @@ One library package at the module root, and one demo module.
 | `Solver.AddStay` / `RemoveStay` / `UpdateStays` | "Leave this where it is unless you must move it." `RemoveEditVariable` calls `UpdateStays` for you, re-anchoring each stay to the value its variable now holds. |
 | `Solver.UpdateVariables()` | Write the tableau back into every `Variable.Value`. Nothing is visible until you call it. |
 | `Solver.Reset()` | Back to empty, reusing the allocations. |
-| `OPTIONAL`, `WEAK`, `MEDIUM`, `STRONG`, `REQUIRED` | The strength ladder: 0, 1, 1 000, 1 000 000 and 1 001 001 000. `Weak(w)`, `Medium(w)` and `Strong(w)` give a weighted point inside a band, clamping `w` to `[1, 999.9999999999999]`. |
+| `OPTIONAL`, `WEAK`, `MEDIUM`, `STRONG`, `REQUIRED` | The strength scale: 0, 1, 1 000, 1 000 000 and 1 001 001 000. `Weak(w)`, `Medium(w)` and `Strong(w)` give a weighted point inside a band, clamping `w` to `[1, 999.9999999999999]`. |
 | `ParseConstraint(expr, vars, opts...)` | A constraint from a string — `ParseConstraint("x == -0.5 * 20", []*Variable{x})`. `ParseExpr` is the same parse without the constraint. |
 | `gio/example/quadrilateral` | The one demo: a quadrilateral whose four corners you drag while four midpoints follow. |
 
@@ -96,7 +96,7 @@ solver.UpdateVariables()
 ```
 
 `x1` held at its weak preference and `x2` moved, because moving `x2` was free
-and moving `x1` was not. That choice is the entire value of the strength ladder.
+and moving `x1` was not. That choice is the entire value of the strength scale.
 
 In a pointer loop the three edit calls line up with the three pointer kinds.
 From `gio/example/quadrilateral/main.go:154`, with the `Point` helper's two-call
